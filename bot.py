@@ -45,7 +45,7 @@ async def ver_gastos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total = ws.acell('J2').value
 
         lista = '\n'.join([f"• ${g}" for g in montos])
-        await update.message.reply_text(f"📊 Gastos:\n{lista}\n\n💰 Total: ${total}")
+        await update.message.reply_text(f"📊 Gastos:\n{lista}\n\n💰 Total: {total}")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
@@ -62,7 +62,7 @@ async def recibir_monto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ws.update_cell(fila, 2, monto)
 
         total = ws.acell('J2').value
-        await update.message.reply_text(f"✅ Agregado: ${monto}\n\n💰 Total: ${total}")
+        await update.message.reply_text(f"✅ Agregado: ${monto}\n\n💰 Total: {total}")
     except ValueError:
         await update.message.reply_text("❌ Envía solo un número")
     except Exception as e:
