@@ -8,6 +8,8 @@ import requests
 logging.basicConfig(level=logging.INFO)
 token = os.getenv("TELEGRAM_BOT_TOKEN")
 onedrive_url = os.getenv("ONEDRIVE_EXCEL_URL")
+RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")  # Render la provee automáticamente
+PORT = int(os.getenv("PORT", "10000"))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -88,4 +90,10 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("total", ver_total))
     app.add_handler(CommandHandler("gastos", ver_gastos))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_monto))
-    app.run_polling()
+
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=token,
+        webhook_url=f"{RENDER_URL}/{token}"
+    )
