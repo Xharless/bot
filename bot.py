@@ -39,6 +39,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Envíame un monto y lo agrego 💰")
 
 if __name__ == '__main__':
-    app = Application.builder().token("TU_TOKEN_AQUI").build()
+    app = Application.builder().token("8743060912:AAF_vmZF2VZpnmT7vOlZ6a2F_GisYO07LIA").build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_monto))
     app.run_polling()
