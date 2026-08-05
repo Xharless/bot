@@ -1,27 +1,25 @@
 from telegram import Update, BotCommand
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
-from openpyxl import load_workbook
+import gspread
+from google.oauth2.service_account import Credentials
 import logging
 import os
-import requests
+import json
 
 logging.basicConfig(level=logging.INFO)
 token = os.getenv("TELEGRAM_BOT_TOKEN")
-onedrive_url = os.getenv("ONEDRIVE_EXCEL_URL")
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
 PORT = int(os.getenv("PORT", "10000"))
+SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 
-def calcular_total(ws):
-    montos = []
-    fila = 3
-    while ws[f'B{fila}'].value is not None:
-        val = ws[f'B{fila}'].value
-        if isinstance(val, (int, float)):
-            montos.append(val)
-        fila += 1
-    f3 = ws['F3'].value
-    f3 = f3 if isinstance(f3, (int, float)) else 0
-    return montos, sum(montos) + f3
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+creds_json = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON"))
+creds = Credentials.from_service_account_info(creds_json, scopes=SCOPES)
+gc = gspread.authorize(creds)
+
+def get_sheet():
+    sh = gc.open_by_key(SHEET_ID)
+    return sh.worksheet("21 de agosto")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -33,27 +31,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ver_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        response = requests.get(onedrive_url)
-        with open('Tarjeta de Credito.xlsx', 'wb') as f:
-            f.write(response.content)
-
-        wb = load_workbook('Tarjeta de Credito.xlsx')
-        ws = wb['21 de agosto']
-        _, total = calcular_total(ws)
-
+        ws = get_sheet()
+        total = ws.acell('J2').value
         await update.message.reply_text(f"💰 Total de gastos: ${total}")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
 async def ver_gastos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        response = requests.get(onedrive_url)
-        with open('Tarjeta de Credito.xlsx', 'wb') as f:
-            f.write(response.content)
-
-        wb = load_workbook('Tarjeta de Credito.xlsx')
-        ws = wb['21 de agosto']
-        montos, total = calcular_total(ws)
+        ws = get_sheet()
+        columna_b = ws.col_values(2)[2:]  # Desde B3
+        montos = [v for v in columna_b if v]
+        total = ws.acell('J2').value
 
         lista = '\n'.join([f"• ${g}" for g in montos])
         await update.message.reply_text(f"📊 Gastos:\n{lista}\n\n💰 Total: ${total}")
@@ -63,26 +52,16 @@ async def ver_gastos(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def recibir_monto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         monto = float(update.message.text)
+        ws = get_sheet()
 
-        response = requests.get(onedrive_url)
-        with open('Tarjeta de Credito.xlsx', 'wb') as f:
-            f.write(response.content)
+        columna_b = ws.col_values(2)
+        fila = len(columna_b) + 1
+        if fila < 3:
+            fila = 3
 
-        wb = load_workbook('Tarjeta de Credito.xlsx')
-        ws = wb['21 de agosto']
+        ws.update_cell(fila, 2, monto)
 
-        fila = 3
-        while ws[f'B{fila}'].value is not None:
-            fila += 1
-
-        ws[f'B{fila}'].value = monto
-        wb.save('Tarjeta de Credito.xlsx')
-
-        with open('Tarjeta de Credito.xlsx', 'rb') as f:
-            requests.put(onedrive_url, data=f)
-
-        _, total = calcular_total(ws)
-
+        total = ws.acell('J2').value
         await update.message.reply_text(f"✅ Agregado: ${monto}\n\n💰 Total: ${total}")
     except ValueError:
         await update.message.reply_text("❌ Envía solo un número")
