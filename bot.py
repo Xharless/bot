@@ -12,6 +12,9 @@ from google.oauth2.service_account import Credentials
 import logging
 import os
 import json
+import html
+
+PARSE_MODE = "HTML"
 
 logging.basicConfig(level=logging.INFO)
 token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -46,9 +49,13 @@ async def ver_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         ws = get_sheet()
         total = ws.acell('J2').value
-        await update.message.reply_text(f"💰 Total de gastos: {total}", reply_markup=MENU)
+        await update.message.reply_text(
+            f"💰 <b>Total de gastos</b>\n{total}",
+            parse_mode=PARSE_MODE,
+            reply_markup=MENU,
+        )
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)}", reply_markup=MENU)
+        await update.message.reply_text(f"❌ Error: {html.escape(str(e))}", parse_mode=PARSE_MODE, reply_markup=MENU)
 
 
 async def ver_gastos(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -58,10 +65,18 @@ async def ver_gastos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         montos = [v for v in columna_b if v]
         total = ws.acell('J2').value
 
-        lista = '\n'.join([f"• {g}" for g in montos])
-        await update.message.reply_text(f"📊 Gastos:\n{lista}\n\n💰 Total: {total}", reply_markup=MENU)
+        if not montos:
+            await update.message.reply_text("📊 Aún no hay gastos registrados.", reply_markup=MENU)
+            return
+
+        lista = '\n'.join([f"{i}. {html.escape(str(g))}" for i, g in enumerate(montos, start=1)])
+        await update.message.reply_text(
+            f"📊 <b>Gastos registrados</b>\n\n{lista}\n\n💰 <b>Total:</b> {total}",
+            parse_mode=PARSE_MODE,
+            reply_markup=MENU,
+        )
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)}", reply_markup=MENU)
+        await update.message.reply_text(f"❌ Error: {html.escape(str(e))}", parse_mode=PARSE_MODE, reply_markup=MENU)
 
 
 async def ver_productos(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -69,40 +84,54 @@ async def ver_productos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ws = get_sheet()
         filas = ws.get('D7:I200')
 
-        productos = []
+        bloques = []
         for fila in filas:
             if not fila or not fila[0]:
                 continue
-            producto = fila[0]
-            costo = fila[2] if len(fila) > 2 else ""
-            cuota = fila[4] if len(fila) > 4 else ""
-            valor_cuota = fila[5] if len(fila) > 5 else ""
-            productos.append(
-                f"🛒 {producto}\n   Costo: {costo} | Cuota: {cuota} | Valor cuota: {valor_cuota}"
+            producto = html.escape(str(fila[0]))
+            costo = html.escape(str(fila[2])) if len(fila) > 2 and fila[2] else "—"
+            cuota = html.escape(str(fila[4])) if len(fila) > 4 and fila[4] else "—"
+            valor_cuota = html.escape(str(fila[5])) if len(fila) > 5 and fila[5] else "—"
+            bloques.append(
+                f"🛒 <b>{producto}</b>\n"
+                f"   💵 Costo: {costo}\n"
+                f"   📅 Cuota: {cuota}\n"
+                f"   💳 Valor cuota: {valor_cuota}"
             )
 
-        if not productos:
-            await update.message.reply_text("No hay productos en cuotas registrados.", reply_markup=MENU)
+        if not bloques:
+            await update.message.reply_text("📦 No hay productos en cuotas registrados.", reply_markup=MENU)
             return
 
-        texto = '\n\n'.join(productos)
-        await update.message.reply_text(f"📦 Productos en cuotas:\n\n{texto}", reply_markup=MENU)
+        separador = "\n➖➖➖➖➖➖➖➖\n"
+        texto = separador.join(bloques)
+        await update.message.reply_text(
+            f"📦 <b>Productos en cuotas</b>\n\n{texto}",
+            parse_mode=PARSE_MODE,
+            reply_markup=MENU,
+        )
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)}", reply_markup=MENU)
+        await update.message.reply_text(f"❌ Error: {html.escape(str(e))}", parse_mode=PARSE_MODE, reply_markup=MENU)
 
 
 async def agregar_cuota_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text(
-        "Vamos a agregar un producto en cuotas.\n¿Cuál es el nombre del producto?\n\n"
-        "(envía /cancelar en cualquier momento para salir)"
+        "🛒 <b>Nuevo producto en cuotas</b>\n\n"
+        "1️⃣ ¿Cuál es el nombre del producto?\n\n"
+        "<i>(envía /cancelar en cualquier momento para salir)</i>",
+        parse_mode=PARSE_MODE,
     )
     return PRODUCTO
 
 
 async def recibir_producto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['producto'] = update.message.text
-    await update.message.reply_text("¿Cuál es el costo total del producto?")
+    await update.message.reply_text(
+        f"✅ Producto: <b>{html.escape(update.message.text)}</b>\n\n"
+        f"2️⃣ ¿Cuál es el costo total del producto?",
+        parse_mode=PARSE_MODE,
+    )
     return COSTO
 
 
@@ -114,7 +143,11 @@ async def recibir_costo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return COSTO
 
     context.user_data['costo'] = costo
-    await update.message.reply_text("¿En cuántas cuotas?")
+    await update.message.reply_text(
+        f"✅ Costo: <b>{costo:,.0f}</b>\n\n"
+        f"3️⃣ ¿En cuántas cuotas?",
+        parse_mode=PARSE_MODE,
+    )
     return CUOTAS
 
 
@@ -129,7 +162,8 @@ async def recibir_cuotas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     producto = context.user_data['producto']
     costo = context.user_data['costo']
-    valor_cuota = round(costo / cuotas, 2)
+    valor_cuota = round(costo / cuotas)
+    cuota_str = f"1/{cuotas}"
 
     try:
         ws = get_sheet()
@@ -142,7 +176,7 @@ async def recibir_cuotas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         ws.update_cell(fila, 4, producto)    # D
         ws.update_cell(fila, 6, costo)       # F
-        ws.update_cell(fila, 8, cuotas)       # H
+        ws.update_cell(fila, 8, cuota_str)    # H
         ws.update_cell(fila, 9, valor_cuota)  # I
         ws.merge_cells(f'D{fila}:E{fila}')
         ws.merge_cells(f'F{fila}:G{fila}')
@@ -156,13 +190,18 @@ async def recibir_cuotas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         total = ws.acell('J2').value
         await update.message.reply_text(
-            f"✅ Producto agregado a cuotas: {producto}\n"
-            f"Costo: {costo} | Cuotas: {cuotas} | Valor cuota: {valor_cuota}\n\n"
-            f"💰 Se agregó {valor_cuota} a gastos. Total: {total}",
+            f"✅ <b>Producto agregado a cuotas</b>\n\n"
+            f"🛒 <b>{html.escape(producto)}</b>\n"
+            f"   💵 Costo: {costo:,.0f}\n"
+            f"   📅 Cuota: {cuota_str}\n"
+            f"   💳 Valor cuota: {valor_cuota:,.0f}\n\n"
+            f"💰 Se sumó {valor_cuota:,.0f} a gastos.\n"
+            f"<b>Total actual:</b> {total}",
+            parse_mode=PARSE_MODE,
             reply_markup=MENU,
         )
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)}", reply_markup=MENU)
+        await update.message.reply_text(f"❌ Error: {html.escape(str(e))}", parse_mode=PARSE_MODE, reply_markup=MENU)
 
     context.user_data.clear()
     return ConversationHandler.END
@@ -170,7 +209,7 @@ async def recibir_cuotas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    await update.message.reply_text("Operación cancelada.", reply_markup=MENU)
+    await update.message.reply_text("🚫 Operación cancelada.", reply_markup=MENU)
     return ConversationHandler.END
 
 
@@ -187,11 +226,15 @@ async def recibir_monto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ws.update_cell(fila, 2, monto)
 
         total = ws.acell('J2').value
-        await update.message.reply_text(f"✅ Agregado: {monto}\n\n💰 Total: {total}", reply_markup=MENU)
+        await update.message.reply_text(
+            f"✅ Agregado: <b>{monto:,.0f}</b>\n\n💰 <b>Total:</b> {total}",
+            parse_mode=PARSE_MODE,
+            reply_markup=MENU,
+        )
     except ValueError:
         await update.message.reply_text("❌ Envía solo un número o usa los botones del menú", reply_markup=MENU)
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)}", reply_markup=MENU)
+        await update.message.reply_text(f"❌ Error: {html.escape(str(e))}", parse_mode=PARSE_MODE, reply_markup=MENU)
 
 
 async def post_init(application: Application):
