@@ -33,18 +33,20 @@ BTN_GASTOS = "📊 Gastos"
 BTN_PRODUCTOS = "🛒 Productos en cuotas"
 BTN_AGREGAR_CUOTA = "➕ Agregar cuota"
 BTN_HOJAS = "📑 Elegir hoja"
+BTN_NUEVA_HOJA = "🗂️ Nueva hoja mensual"
 
 CB_TOTAL = "total"
 CB_GASTOS = "gastos"
 CB_PRODUCTOS = "productos"
 CB_AGREGAR_CUOTA = "agregar_cuota"
 CB_HOJAS = "hojas"
+CB_NUEVA_HOJA = "nueva_hoja"
 CB_CANCELAR = "cancelar"
 CB_HOJA_PREFIX = "hoja:"
 
 DEFAULT_SHEET = "21 de agosto"
 
-PRODUCTO, COSTO, CUOTAS, ELEGIR_HOJA = range(4)
+PRODUCTO, COSTO, CUOTAS, ELEGIR_HOJA, NOMBRE_HOJA = range(5)
 
 
 def menu_inline():
@@ -53,7 +55,8 @@ def menu_inline():
          InlineKeyboardButton(BTN_GASTOS, callback_data=CB_GASTOS)],
         [InlineKeyboardButton(BTN_PRODUCTOS, callback_data=CB_PRODUCTOS),
          InlineKeyboardButton(BTN_AGREGAR_CUOTA, callback_data=CB_AGREGAR_CUOTA)],
-        [InlineKeyboardButton(BTN_HOJAS, callback_data=CB_HOJAS)],
+        [InlineKeyboardButton(BTN_HOJAS, callback_data=CB_HOJAS),
+         InlineKeyboardButton(BTN_NUEVA_HOJA, callback_data=CB_NUEVA_HOJA)],
     ])
 
 
@@ -300,6 +303,106 @@ async def recibir_hoja(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def nueva_hoja_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await responder(
+        update, context,
+        "🗂️ <b>Nueva hoja mensual</b>\n\n"
+        "Se duplicará la hoja actual: las cuotas avanzan en 1, las que ya terminaron "
+        "se eliminan de la tabla, y los gastos se reinician dejando solo el valor de "
+        "las cuotas vigentes.\n\n"
+        "✏️ ¿Qué nombre le pones a la nueva hoja?",
+        reply_markup=cancelar_inline(),
+    )
+    return NOMBRE_HOJA
+
+
+async def recibir_nombre_hoja(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    nombre = update.message.text.strip()
+
+    if not nombre:
+        await update.message.reply_text("❌ Envía un nombre válido para la hoja", reply_markup=cancelar_inline())
+        return NOMBRE_HOJA
+
+    try:
+        sh = gc.open_by_key(SHEET_ID)
+        existentes = [w.title for w in sh.worksheets()]
+        if nombre in existentes:
+            await update.message.reply_text(
+                "❌ Ya existe una hoja con ese nombre, envía otro",
+                reply_markup=cancelar_inline(),
+            )
+            return NOMBRE_HOJA
+
+        ws_actual = get_sheet(context)
+        filas_originales = ws_actual.get('D7:I200')
+
+        nueva_ws = ws_actual.duplicate(new_sheet_name=nombre)
+
+        sobrevivientes = []
+        completadas = 0
+        total_filas_originales = 0
+
+        for fila in filas_originales:
+            if not fila or not fila[0]:
+                continue
+            total_filas_originales += 1
+
+            producto = fila[0]
+            costo = fila[2] if len(fila) > 2 else ""
+            cuota_str = fila[4] if len(fila) > 4 else ""
+            valor_cuota = fila[5] if len(fila) > 5 else ""
+
+            try:
+                actual, maximo = cuota_str.split('/')
+                nueva_actual = int(actual) + 1
+                maximo = int(maximo)
+            except (ValueError, AttributeError):
+                sobrevivientes.append((producto, costo, cuota_str, valor_cuota))
+                continue
+
+            if nueva_actual > maximo:
+                completadas += 1
+                continue
+
+            sobrevivientes.append((producto, costo, f"{nueva_actual}/{maximo}", valor_cuota))
+
+        # Limpia toda la tabla de cuotas y de gastos antes de reescribir
+        nueva_ws.batch_clear(['D7:I200', 'B3:B1000'])
+
+        for i, (producto, costo, cuota_str, valor_cuota) in enumerate(sobrevivientes):
+            fila_num = 7 + i
+            nueva_ws.update_cell(fila_num, 4, producto)
+            nueva_ws.update_cell(fila_num, 6, costo)
+            nueva_ws.update_cell(fila_num, 8, cuota_str)
+            nueva_ws.update_cell(fila_num, 9, valor_cuota)
+            nueva_ws.merge_cells(f'D{fila_num}:E{fila_num}')
+            nueva_ws.merge_cells(f'F{fila_num}:G{fila_num}')
+
+            fila_gasto = 3 + i
+            nueva_ws.update_cell(fila_gasto, 2, valor_cuota)
+
+        context.chat_data['hoja'] = nombre
+        context.chat_data.pop('hojas_disponibles', None)
+
+        await update.message.reply_text(
+            f"✅ <b>Hoja creada:</b> {html.escape(nombre)}\n\n"
+            f"📅 Cuotas avanzadas: <b>{len(sobrevivientes)}</b>\n"
+            f"🏁 Cuotas completadas y eliminadas: <b>{completadas}</b>\n"
+            f"📊 Gastos reiniciados con el valor de las cuotas vigentes.\n\n"
+            f"📍 Ahora estás usando esta hoja.",
+            parse_mode=PARSE_MODE,
+            reply_markup=menu_inline(),
+        )
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Error: {html.escape(str(e))}",
+            parse_mode=PARSE_MODE,
+            reply_markup=menu_inline(),
+        )
+
+    return ConversationHandler.END
+
+
 async def recibir_monto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         monto = float(update.message.text)
@@ -365,6 +468,18 @@ if __name__ == '__main__':
         ],
     )
     app.add_handler(hoja_handler)
+
+    nueva_hoja_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(nueva_hoja_start, pattern=f"^{CB_NUEVA_HOJA}$")],
+        states={
+            NOMBRE_HOJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_nombre_hoja)],
+        },
+        fallbacks=[
+            CommandHandler("cancelar", cancelar),
+            CallbackQueryHandler(cancelar, pattern=f"^{CB_CANCELAR}$"),
+        ],
+    )
+    app.add_handler(nueva_hoja_handler)
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_monto))
 
