@@ -1,4 +1,4 @@
-from telegram import Update, BotCommand
+from telegram import Update, BotCommand, ReplyKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 import gspread
 from google.oauth2.service_account import Credentials
@@ -17,25 +17,29 @@ creds_json = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON"))
 creds = Credentials.from_service_account_info(creds_json, scopes=SCOPES)
 gc = gspread.authorize(creds)
 
+BTN_TOTAL = "💰 Total"
+BTN_GASTOS = "📊 Gastos"
+BTN_PRODUCTOS = "🛒 Productos en cuotas"
+
+MENU = ReplyKeyboardMarkup(
+    [[BTN_TOTAL, BTN_GASTOS], [BTN_PRODUCTOS]],
+    resize_keyboard=True,
+)
+
+
 def get_sheet():
     sh = gc.open_by_key(SHEET_ID)
     return sh.worksheet("21 de agosto")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Comandos disponibles:\n"
-        "/total - Ver total de gastos\n"
-        "/gastos - Ver todos los gastos\n"
-        "\nO simplemente envía un número para agregar un gasto"
-    )
 
 async def ver_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         ws = get_sheet()
         total = ws.acell('J2').value
-        await update.message.reply_text(f"💰 Total de gastos: ${total}")
+        await update.message.reply_text(f"💰 Total de gastos: {total}", reply_markup=MENU)
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)}")
+        await update.message.reply_text(f"❌ Error: {str(e)}", reply_markup=MENU)
+
 
 async def ver_gastos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -44,10 +48,38 @@ async def ver_gastos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         montos = [v for v in columna_b if v]
         total = ws.acell('J2').value
 
-        lista = '\n'.join([f"• ${g}" for g in montos])
-        await update.message.reply_text(f"📊 Gastos:\n{lista}\n\n💰 Total: {total}")
+        lista = '\n'.join([f"• {g}" for g in montos])
+        await update.message.reply_text(f"📊 Gastos:\n{lista}\n\n💰 Total: {total}", reply_markup=MENU)
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)}")
+        await update.message.reply_text(f"❌ Error: {str(e)}", reply_markup=MENU)
+
+
+async def ver_productos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        ws = get_sheet()
+        filas = ws.get('D6:I200')
+
+        productos = []
+        for fila in filas:
+            if not fila or not fila[0]:
+                continue
+            producto = fila[0]
+            costo = fila[2] if len(fila) > 2 else ""
+            cuota = fila[4] if len(fila) > 4 else ""
+            valor_cuota = fila[5] if len(fila) > 5 else ""
+            productos.append(
+                f"🛒 {producto}\n   Costo: {costo} | Cuota: {cuota} | Valor cuota: {valor_cuota}"
+            )
+
+        if not productos:
+            await update.message.reply_text("No hay productos en cuotas registrados.", reply_markup=MENU)
+            return
+
+        texto = '\n\n'.join(productos)
+        await update.message.reply_text(f"📦 Productos en cuotas:\n\n{texto}", reply_markup=MENU)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}", reply_markup=MENU)
+
 
 async def recibir_monto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -62,24 +94,29 @@ async def recibir_monto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ws.update_cell(fila, 2, monto)
 
         total = ws.acell('J2').value
-        await update.message.reply_text(f"✅ Agregado: ${monto}\n\n💰 Total: {total}")
+        await update.message.reply_text(f"✅ Agregado: {monto}\n\n💰 Total: {total}", reply_markup=MENU)
     except ValueError:
-        await update.message.reply_text("❌ Envía solo un número")
+        await update.message.reply_text("❌ Envía solo un número o usa los botones del menú", reply_markup=MENU)
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)}")
+        await update.message.reply_text(f"❌ Error: {str(e)}", reply_markup=MENU)
+
 
 async def post_init(application: Application):
     await application.bot.set_my_commands([
-        BotCommand("start", "Ver ayuda"),
         BotCommand("total", "Ver total de gastos"),
         BotCommand("gastos", "Ver todos los gastos"),
+        BotCommand("productos", "Ver productos en cuotas"),
     ])
+
 
 if __name__ == '__main__':
     app = Application.builder().token(token).post_init(post_init).build()
-    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("total", ver_total))
     app.add_handler(CommandHandler("gastos", ver_gastos))
+    app.add_handler(CommandHandler("productos", ver_productos))
+    app.add_handler(MessageHandler(filters.Regex(f"^{BTN_TOTAL}$"), ver_total))
+    app.add_handler(MessageHandler(filters.Regex(f"^{BTN_GASTOS}$"), ver_gastos))
+    app.add_handler(MessageHandler(filters.Regex(f"^{BTN_PRODUCTOS}$"), ver_productos))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_monto))
 
     app.run_webhook(
