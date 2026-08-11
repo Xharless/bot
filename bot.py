@@ -32,21 +32,27 @@ BTN_TOTAL = "💰 Total"
 BTN_GASTOS = "📊 Gastos"
 BTN_PRODUCTOS = "🛒 Productos en cuotas"
 BTN_AGREGAR_CUOTA = "➕ Agregar cuota"
-BTN_HOJAS = "📑 Elegir hoja"
+BTN_HOJA_MENU = "📑 Hojas"
+BTN_ELEGIR_HOJA = "📋 Elegir hoja"
 BTN_NUEVA_HOJA = "🗂️ Nueva hoja mensual"
+BTN_ELIMINAR_HOJA = "🗑️ Eliminar hoja"
 
 CB_TOTAL = "total"
 CB_GASTOS = "gastos"
 CB_PRODUCTOS = "productos"
 CB_AGREGAR_CUOTA = "agregar_cuota"
+CB_HOJA_MENU = "hoja_menu"
 CB_HOJAS = "hojas"
 CB_NUEVA_HOJA = "nueva_hoja"
+CB_ELIMINAR_HOJA = "eliminar_hoja"
 CB_CANCELAR = "cancelar"
 CB_HOJA_PREFIX = "hoja:"
+CB_DELHOJA_PREFIX = "delhoja:"
+CB_CONFIRMDEL_PREFIX = "confirmdel:"
 
 DEFAULT_SHEET = "21 de agosto"
 
-PRODUCTO, COSTO, CUOTAS, ELEGIR_HOJA, NOMBRE_HOJA = range(5)
+PRODUCTO, COSTO, CUOTAS, ELEGIR_HOJA, NOMBRE_HOJA, ELIMINAR_HOJA, CONFIRMAR_ELIMINAR = range(7)
 
 
 def menu_inline():
@@ -55,8 +61,16 @@ def menu_inline():
          InlineKeyboardButton(BTN_GASTOS, callback_data=CB_GASTOS)],
         [InlineKeyboardButton(BTN_PRODUCTOS, callback_data=CB_PRODUCTOS),
          InlineKeyboardButton(BTN_AGREGAR_CUOTA, callback_data=CB_AGREGAR_CUOTA)],
-        [InlineKeyboardButton(BTN_HOJAS, callback_data=CB_HOJAS),
-         InlineKeyboardButton(BTN_NUEVA_HOJA, callback_data=CB_NUEVA_HOJA)],
+        [InlineKeyboardButton(BTN_HOJA_MENU, callback_data=CB_HOJA_MENU)],
+    ])
+
+
+def hoja_menu_inline():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(BTN_ELEGIR_HOJA, callback_data=CB_HOJAS)],
+        [InlineKeyboardButton(BTN_NUEVA_HOJA, callback_data=CB_NUEVA_HOJA)],
+        [InlineKeyboardButton(BTN_ELIMINAR_HOJA, callback_data=CB_ELIMINAR_HOJA)],
+        [InlineKeyboardButton("⬅️ Volver", callback_data=CB_CANCELAR)],
     ])
 
 
@@ -88,6 +102,15 @@ def get_sheet(context: ContextTypes.DEFAULT_TYPE):
 
 async def mostrar_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await responder(update, context, "👋 <b>¿Qué quieres hacer?</b>")
+
+
+async def hoja_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    actual = context.chat_data.get('hoja', DEFAULT_SHEET)
+    await responder(
+        update, context,
+        f"📑 <b>Hojas</b>\n\n📍 Hoja actual: <b>{html.escape(actual)}</b>",
+        reply_markup=hoja_menu_inline(),
+    )
 
 
 async def ver_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -299,7 +322,11 @@ async def recibir_hoja(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.chat_data['hoja'] = nombre
     context.chat_data.pop('hojas_disponibles', None)
-    await responder(update, context, f"✅ Ahora estás usando la hoja: <b>{html.escape(nombre)}</b>")
+    await responder(
+        update, context,
+        f"✅ Ahora estás usando la hoja: <b>{html.escape(nombre)}</b>",
+        reply_markup=hoja_menu_inline(),
+    )
     return ConversationHandler.END
 
 
@@ -403,6 +430,85 @@ async def recibir_nombre_hoja(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 
+async def eliminar_hoja_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        sh = gc.open_by_key(SHEET_ID)
+        nombres = [w.title for w in sh.worksheets()]
+        context.chat_data['hojas_disponibles'] = nombres
+
+        if len(nombres) <= 1:
+            await responder(
+                update, context,
+                "❌ No puedes eliminar la única hoja que existe.",
+                reply_markup=hoja_menu_inline(),
+            )
+            return ConversationHandler.END
+
+        botones = [
+            [InlineKeyboardButton(f"🗑️ {n}", callback_data=f"{CB_DELHOJA_PREFIX}{n}")]
+            for n in nombres
+        ]
+        botones.append([InlineKeyboardButton("🚫 Cancelar", callback_data=CB_CANCELAR)])
+
+        await responder(
+            update, context,
+            "🗑️ <b>Eliminar hoja</b>\n\nToca la hoja que quieres eliminar.",
+            reply_markup=InlineKeyboardMarkup(botones),
+        )
+        return ELIMINAR_HOJA
+    except Exception as e:
+        await responder(update, context, f"❌ Error: {html.escape(str(e))}")
+        return ConversationHandler.END
+
+
+async def recibir_eliminar_hoja(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    nombre = query.data[len(CB_DELHOJA_PREFIX):]
+    nombres = context.chat_data.get('hojas_disponibles', [])
+
+    if nombre not in nombres:
+        await query.answer("Hoja no válida", show_alert=True)
+        return ELIMINAR_HOJA
+
+    botones = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Sí, eliminar", callback_data=f"{CB_CONFIRMDEL_PREFIX}{nombre}")],
+        [InlineKeyboardButton("🚫 Cancelar", callback_data=CB_CANCELAR)],
+    ])
+    await responder(
+        update, context,
+        f"⚠️ <b>¿Eliminar la hoja \"{html.escape(nombre)}\"?</b>\n\n"
+        f"Esta acción no se puede deshacer.",
+        reply_markup=botones,
+    )
+    return CONFIRMAR_ELIMINAR
+
+
+async def confirmar_eliminar_hoja(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    nombre = query.data[len(CB_CONFIRMDEL_PREFIX):]
+
+    try:
+        sh = gc.open_by_key(SHEET_ID)
+        ws = sh.worksheet(nombre)
+        sh.del_worksheet(ws)
+
+        if context.chat_data.get('hoja') == nombre:
+            restantes = [w.title for w in sh.worksheets()]
+            context.chat_data['hoja'] = DEFAULT_SHEET if DEFAULT_SHEET in restantes else restantes[0]
+
+        context.chat_data.pop('hojas_disponibles', None)
+        await responder(
+            update, context,
+            f"🗑️ Hoja <b>{html.escape(nombre)}</b> eliminada.\n\n"
+            f"📍 Hoja actual: <b>{html.escape(context.chat_data.get('hoja', DEFAULT_SHEET))}</b>",
+            reply_markup=hoja_menu_inline(),
+        )
+    except Exception as e:
+        await responder(update, context, f"❌ Error: {html.escape(str(e))}", reply_markup=hoja_menu_inline())
+
+    return ConversationHandler.END
+
+
 async def recibir_monto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         monto = float(update.message.text)
@@ -442,6 +548,7 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(ver_total, pattern=f"^{CB_TOTAL}$"))
     app.add_handler(CallbackQueryHandler(ver_gastos, pattern=f"^{CB_GASTOS}$"))
     app.add_handler(CallbackQueryHandler(ver_productos, pattern=f"^{CB_PRODUCTOS}$"))
+    app.add_handler(CallbackQueryHandler(hoja_menu, pattern=f"^{CB_HOJA_MENU}$"))
 
     conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(agregar_cuota_start, pattern=f"^{CB_AGREGAR_CUOTA}$")],
@@ -480,6 +587,22 @@ if __name__ == '__main__':
         ],
     )
     app.add_handler(nueva_hoja_handler)
+
+    eliminar_hoja_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(eliminar_hoja_start, pattern=f"^{CB_ELIMINAR_HOJA}$")],
+        states={
+            ELIMINAR_HOJA: [CallbackQueryHandler(recibir_eliminar_hoja, pattern=f"^{CB_DELHOJA_PREFIX}")],
+            CONFIRMAR_ELIMINAR: [CallbackQueryHandler(confirmar_eliminar_hoja, pattern=f"^{CB_CONFIRMDEL_PREFIX}")],
+        },
+        fallbacks=[
+            CommandHandler("cancelar", cancelar),
+            CallbackQueryHandler(cancelar, pattern=f"^{CB_CANCELAR}$"),
+        ],
+    )
+    app.add_handler(eliminar_hoja_handler)
+
+    # Fuera de cualquier conversación: botón "Volver" del submenú de hojas
+    app.add_handler(CallbackQueryHandler(cancelar, pattern=f"^{CB_CANCELAR}$"))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_monto))
 
