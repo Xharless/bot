@@ -1,8 +1,9 @@
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     MessageHandler,
     CommandHandler,
+    CallbackQueryHandler,
     ConversationHandler,
     filters,
     ContextTypes,
@@ -31,57 +32,93 @@ BTN_TOTAL = "💰 Total"
 BTN_GASTOS = "📊 Gastos"
 BTN_PRODUCTOS = "🛒 Productos en cuotas"
 BTN_AGREGAR_CUOTA = "➕ Agregar cuota"
+BTN_HOJAS = "📑 Elegir hoja"
 
-MENU = ReplyKeyboardMarkup(
-    [[BTN_TOTAL, BTN_GASTOS], [BTN_PRODUCTOS, BTN_AGREGAR_CUOTA]],
-    resize_keyboard=True,
-)
+CB_TOTAL = "total"
+CB_GASTOS = "gastos"
+CB_PRODUCTOS = "productos"
+CB_AGREGAR_CUOTA = "agregar_cuota"
+CB_HOJAS = "hojas"
+CB_CANCELAR = "cancelar"
+CB_HOJA_PREFIX = "hoja:"
 
-PRODUCTO, COSTO, CUOTAS = range(3)
+DEFAULT_SHEET = "21 de agosto"
+
+PRODUCTO, COSTO, CUOTAS, ELEGIR_HOJA = range(4)
 
 
-def get_sheet():
+def menu_inline():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(BTN_TOTAL, callback_data=CB_TOTAL),
+         InlineKeyboardButton(BTN_GASTOS, callback_data=CB_GASTOS)],
+        [InlineKeyboardButton(BTN_PRODUCTOS, callback_data=CB_PRODUCTOS),
+         InlineKeyboardButton(BTN_AGREGAR_CUOTA, callback_data=CB_AGREGAR_CUOTA)],
+        [InlineKeyboardButton(BTN_HOJAS, callback_data=CB_HOJAS)],
+    ])
+
+
+def cancelar_inline():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🚫 Cancelar", callback_data=CB_CANCELAR)]])
+
+
+async def responder(update: Update, context: ContextTypes.DEFAULT_TYPE, texto, reply_markup=None):
+    markup = reply_markup if reply_markup is not None else menu_inline()
+    if update.callback_query:
+        await update.callback_query.answer()
+        try:
+            await update.callback_query.edit_message_text(texto, parse_mode=PARSE_MODE, reply_markup=markup)
+        except Exception:
+            await update.callback_query.message.reply_text(texto, parse_mode=PARSE_MODE, reply_markup=markup)
+    else:
+        await update.message.reply_text(texto, parse_mode=PARSE_MODE, reply_markup=markup)
+
+
+def get_sheet(context: ContextTypes.DEFAULT_TYPE):
     sh = gc.open_by_key(SHEET_ID)
-    return sh.worksheet("21 de agosto")
+    nombre_hoja = context.chat_data.get('hoja', DEFAULT_SHEET)
+    try:
+        return sh.worksheet(nombre_hoja)
+    except gspread.exceptions.WorksheetNotFound:
+        context.chat_data['hoja'] = DEFAULT_SHEET
+        return sh.worksheet(DEFAULT_SHEET)
+
+
+async def mostrar_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await responder(update, context, "👋 <b>¿Qué quieres hacer?</b>")
 
 
 async def ver_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        ws = get_sheet()
+        ws = get_sheet(context)
         total = ws.acell('J2').value
-        await update.message.reply_text(
-            f"💰 <b>Total de gastos</b>\n{total}",
-            parse_mode=PARSE_MODE,
-            reply_markup=MENU,
-        )
+        await responder(update, context, f"💰 <b>Total de gastos</b>\n{total}")
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {html.escape(str(e))}", parse_mode=PARSE_MODE, reply_markup=MENU)
+        await responder(update, context, f"❌ Error: {html.escape(str(e))}")
 
 
 async def ver_gastos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        ws = get_sheet()
+        ws = get_sheet(context)
         columna_b = ws.col_values(2)[2:]  # Desde B3
         montos = [v for v in columna_b if v]
         total = ws.acell('J2').value
 
         if not montos:
-            await update.message.reply_text("📊 Aún no hay gastos registrados.", reply_markup=MENU)
+            await responder(update, context, "📊 Aún no hay gastos registrados.")
             return
 
         lista = '\n'.join([f"{i}. {html.escape(str(g))}" for i, g in enumerate(montos, start=1)])
-        await update.message.reply_text(
+        await responder(
+            update, context,
             f"📊 <b>Gastos registrados</b>\n\n{lista}\n\n💰 <b>Total:</b> {total}",
-            parse_mode=PARSE_MODE,
-            reply_markup=MENU,
         )
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {html.escape(str(e))}", parse_mode=PARSE_MODE, reply_markup=MENU)
+        await responder(update, context, f"❌ Error: {html.escape(str(e))}")
 
 
 async def ver_productos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        ws = get_sheet()
+        ws = get_sheet(context)
         filas = ws.get('D7:I200')
 
         bloques = []
@@ -100,27 +137,23 @@ async def ver_productos(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         if not bloques:
-            await update.message.reply_text("📦 No hay productos en cuotas registrados.", reply_markup=MENU)
+            await responder(update, context, "📦 No hay productos en cuotas registrados.")
             return
 
         separador = "\n➖➖➖➖➖➖➖➖\n"
         texto = separador.join(bloques)
-        await update.message.reply_text(
-            f"📦 <b>Productos en cuotas</b>\n\n{texto}",
-            parse_mode=PARSE_MODE,
-            reply_markup=MENU,
-        )
+        await responder(update, context, f"📦 <b>Productos en cuotas</b>\n\n{texto}")
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {html.escape(str(e))}", parse_mode=PARSE_MODE, reply_markup=MENU)
+        await responder(update, context, f"❌ Error: {html.escape(str(e))}")
 
 
 async def agregar_cuota_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    await update.message.reply_text(
+    await responder(
+        update, context,
         "🛒 <b>Nuevo producto en cuotas</b>\n\n"
-        "1️⃣ ¿Cuál es el nombre del producto?\n\n"
-        "<i>(envía /cancelar en cualquier momento para salir)</i>",
-        parse_mode=PARSE_MODE,
+        "1️⃣ ¿Cuál es el nombre del producto?",
+        reply_markup=cancelar_inline(),
     )
     return PRODUCTO
 
@@ -131,6 +164,7 @@ async def recibir_producto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Producto: <b>{html.escape(update.message.text)}</b>\n\n"
         f"2️⃣ ¿Cuál es el costo total del producto?",
         parse_mode=PARSE_MODE,
+        reply_markup=cancelar_inline(),
     )
     return COSTO
 
@@ -139,7 +173,10 @@ async def recibir_costo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         costo = float(update.message.text.replace(',', '.'))
     except ValueError:
-        await update.message.reply_text("❌ Envía solo un número para el costo")
+        await update.message.reply_text(
+            "❌ Envía solo un número para el costo",
+            reply_markup=cancelar_inline(),
+        )
         return COSTO
 
     context.user_data['costo'] = costo
@@ -147,6 +184,7 @@ async def recibir_costo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Costo: <b>{costo:,.0f}</b>\n\n"
         f"3️⃣ ¿En cuántas cuotas?",
         parse_mode=PARSE_MODE,
+        reply_markup=cancelar_inline(),
     )
     return CUOTAS
 
@@ -157,7 +195,10 @@ async def recibir_cuotas(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if cuotas <= 0:
             raise ValueError
     except ValueError:
-        await update.message.reply_text("❌ Envía un número entero de cuotas")
+        await update.message.reply_text(
+            "❌ Envía un número entero de cuotas",
+            reply_markup=cancelar_inline(),
+        )
         return CUOTAS
 
     producto = context.user_data['producto']
@@ -166,7 +207,7 @@ async def recibir_cuotas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cuota_str = f"1/{cuotas}"
 
     try:
-        ws = get_sheet()
+        ws = get_sheet(context)
 
         # Próxima fila libre de la tabla de cuotas (desde la fila 7)
         columna_d = ws.col_values(4)
@@ -198,10 +239,14 @@ async def recibir_cuotas(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 Se sumó {valor_cuota:,.0f} a gastos.\n"
             f"<b>Total actual:</b> {total}",
             parse_mode=PARSE_MODE,
-            reply_markup=MENU,
+            reply_markup=menu_inline(),
         )
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {html.escape(str(e))}", parse_mode=PARSE_MODE, reply_markup=MENU)
+        await update.message.reply_text(
+            f"❌ Error: {html.escape(str(e))}",
+            parse_mode=PARSE_MODE,
+            reply_markup=menu_inline(),
+        )
 
     context.user_data.clear()
     return ConversationHandler.END
@@ -209,14 +254,56 @@ async def recibir_cuotas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    await update.message.reply_text("🚫 Operación cancelada.", reply_markup=MENU)
+    context.chat_data.pop('hojas_disponibles', None)
+    await responder(update, context, "🚫 Operación cancelada.")
+    return ConversationHandler.END
+
+
+async def elegir_hoja_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        sh = gc.open_by_key(SHEET_ID)
+        nombres = [w.title for w in sh.worksheets()]
+        context.chat_data['hojas_disponibles'] = nombres
+
+        actual = context.chat_data.get('hoja', DEFAULT_SHEET)
+        botones = [
+            [InlineKeyboardButton(("📍 " if n == actual else "") + n, callback_data=f"{CB_HOJA_PREFIX}{n}")]
+            for n in nombres
+        ]
+        botones.append([InlineKeyboardButton("🚫 Cancelar", callback_data=CB_CANCELAR)])
+
+        await responder(
+            update, context,
+            f"📑 <b>Hojas disponibles</b>\n\n"
+            f"📍 Hoja actual: <b>{html.escape(actual)}</b>\n\n"
+            f"Toca una hoja para seleccionarla.",
+            reply_markup=InlineKeyboardMarkup(botones),
+        )
+        return ELEGIR_HOJA
+    except Exception as e:
+        await responder(update, context, f"❌ Error: {html.escape(str(e))}")
+        return ConversationHandler.END
+
+
+async def recibir_hoja(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    nombre = query.data[len(CB_HOJA_PREFIX):]
+    nombres = context.chat_data.get('hojas_disponibles', [])
+
+    if nombre not in nombres:
+        await query.answer("Hoja no válida", show_alert=True)
+        return ELEGIR_HOJA
+
+    context.chat_data['hoja'] = nombre
+    context.chat_data.pop('hojas_disponibles', None)
+    await responder(update, context, f"✅ Ahora estás usando la hoja: <b>{html.escape(nombre)}</b>")
     return ConversationHandler.END
 
 
 async def recibir_monto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         monto = float(update.message.text)
-        ws = get_sheet()
+        ws = get_sheet(context)
 
         columna_b = ws.col_values(2)
         fila = len(columna_b) + 1
@@ -229,38 +316,55 @@ async def recibir_monto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ Agregado: <b>{monto:,.0f}</b>\n\n💰 <b>Total:</b> {total}",
             parse_mode=PARSE_MODE,
-            reply_markup=MENU,
+            reply_markup=menu_inline(),
         )
     except ValueError:
-        await update.message.reply_text("❌ Envía solo un número o usa los botones del menú", reply_markup=MENU)
+        await mostrar_menu(update, context)
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {html.escape(str(e))}", parse_mode=PARSE_MODE, reply_markup=MENU)
+        await update.message.reply_text(
+            f"❌ Error: {html.escape(str(e))}",
+            parse_mode=PARSE_MODE,
+            reply_markup=menu_inline(),
+        )
 
 
 async def post_init(application: Application):
-    # Sin comandos en el menú de Telegram: solo botones en el chat
+    # Sin comandos en el menú de Telegram: solo botones inline en el chat
     await application.bot.set_my_commands([])
 
 
 if __name__ == '__main__':
     app = Application.builder().token(token).post_init(post_init).build()
-    app.add_handler(CommandHandler("total", ver_total))
-    app.add_handler(CommandHandler("gastos", ver_gastos))
-    app.add_handler(CommandHandler("productos", ver_productos))
-    app.add_handler(MessageHandler(filters.Regex(f"^{BTN_TOTAL}$"), ver_total))
-    app.add_handler(MessageHandler(filters.Regex(f"^{BTN_GASTOS}$"), ver_gastos))
-    app.add_handler(MessageHandler(filters.Regex(f"^{BTN_PRODUCTOS}$"), ver_productos))
+
+    app.add_handler(CallbackQueryHandler(ver_total, pattern=f"^{CB_TOTAL}$"))
+    app.add_handler(CallbackQueryHandler(ver_gastos, pattern=f"^{CB_GASTOS}$"))
+    app.add_handler(CallbackQueryHandler(ver_productos, pattern=f"^{CB_PRODUCTOS}$"))
 
     conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex(f"^{BTN_AGREGAR_CUOTA}$"), agregar_cuota_start)],
+        entry_points=[CallbackQueryHandler(agregar_cuota_start, pattern=f"^{CB_AGREGAR_CUOTA}$")],
         states={
             PRODUCTO: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_producto)],
             COSTO: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_costo)],
             CUOTAS: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_cuotas)],
         },
-        fallbacks=[CommandHandler("cancelar", cancelar)],
+        fallbacks=[
+            CommandHandler("cancelar", cancelar),
+            CallbackQueryHandler(cancelar, pattern=f"^{CB_CANCELAR}$"),
+        ],
     )
     app.add_handler(conv_handler)
+
+    hoja_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(elegir_hoja_start, pattern=f"^{CB_HOJAS}$")],
+        states={
+            ELEGIR_HOJA: [CallbackQueryHandler(recibir_hoja, pattern=f"^{CB_HOJA_PREFIX}")],
+        },
+        fallbacks=[
+            CommandHandler("cancelar", cancelar),
+            CallbackQueryHandler(cancelar, pattern=f"^{CB_CANCELAR}$"),
+        ],
+    )
+    app.add_handler(hoja_handler)
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_monto))
 
