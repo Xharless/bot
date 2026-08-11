@@ -1,4 +1,4 @@
-from telegram import Update, BotCommand, ReplyKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 import gspread
 from google.oauth2.service_account import Credentials
@@ -57,7 +57,7 @@ async def ver_gastos(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ver_productos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         ws = get_sheet()
-        filas = ws.get('D6:I200')
+        filas = ws.get('D7:I200')
 
         productos = []
         for fila in filas:
@@ -102,11 +102,8 @@ async def recibir_monto(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def post_init(application: Application):
-    await application.bot.set_my_commands([
-        BotCommand("total", "Ver total de gastos"),
-        BotCommand("gastos", "Ver todos los gastos"),
-        BotCommand("productos", "Ver productos en cuotas"),
-    ])
+    # Sin comandos en el menú de Telegram: solo botones en el chat
+    await application.bot.set_my_commands([])
 
 
 if __name__ == '__main__':
