@@ -14,6 +14,8 @@ import logging
 import os
 import json
 import html
+import re
+from datetime import datetime, time as dtime
 
 PARSE_MODE = "HTML"
 
@@ -49,10 +51,17 @@ CB_CANCELAR = "cancelar"
 CB_HOJA_PREFIX = "hoja:"
 CB_DELHOJA_PREFIX = "delhoja:"
 CB_CONFIRMDEL_PREFIX = "confirmdel:"
+CB_CUOTA1_SI = "cuota1_si"
+CB_CUOTA1_NO = "cuota1_no"
 
 DEFAULT_SHEET = "21 de agosto"
 
-PRODUCTO, COSTO, CUOTAS, ELEGIR_HOJA, NOMBRE_HOJA, ELIMINAR_HOJA, CONFIRMAR_ELIMINAR = range(7)
+# Hora (UTC) en la que se revisa si hoy corresponde al día de cierre de facturación
+# de la hoja activa de cada chat. Chile está en UTC-4/UTC-3, así que 13:00 UTC
+# equivale a ~09:00-10:00 hora Chile. Ajustar si se requiere más precisión.
+HORA_REVISION_FACTURACION_UTC = dtime(hour=13, minute=0)
+
+PRODUCTO, COSTO, CUOTAS, ELEGIR_HOJA, NOMBRE_HOJA, CONFIRMAR_CUOTA1, ELIMINAR_HOJA, CONFIRMAR_ELIMINAR = range(8)
 
 
 def menu_inline():
@@ -88,6 +97,44 @@ async def responder(update: Update, context: ContextTypes.DEFAULT_TYPE, texto, r
             await update.callback_query.message.reply_text(texto, parse_mode=PARSE_MODE, reply_markup=markup)
     else:
         await update.message.reply_text(texto, parse_mode=PARSE_MODE, reply_markup=markup)
+
+
+MESES = {
+    'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4, 'mayo': 5, 'junio': 6,
+    'julio': 7, 'agosto': 8, 'septiembre': 9, 'setiembre': 9, 'octubre': 10,
+    'noviembre': 11, 'diciembre': 12,
+}
+
+
+def extraer_fecha_cierre(nombre_hoja):
+    m = re.match(r'\s*(\d{1,2})\s+de\s+(\w+)', nombre_hoja.lower())
+    if not m:
+        return None
+    mes = MESES.get(m.group(2))
+    if mes is None:
+        return None
+    return int(m.group(1)), mes
+
+
+async def revisar_facturacion(context: ContextTypes.DEFAULT_TYPE):
+    hoy = datetime.utcnow()
+    for chat_id, data in context.application.chat_data.items():
+        hoja = data.get('hoja', DEFAULT_SHEET)
+        fecha_cierre = extraer_fecha_cierre(hoja)
+        if fecha_cierre is None or fecha_cierre != (hoy.day, hoy.month):
+            continue
+        if data.get('facturacion_notificada') == hoja:
+            continue
+        data['facturacion_notificada'] = hoja
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"📅 <b>Fin de facturación</b>\n\nHoy se terminó de facturar el mes de "
+                     f"<b>{html.escape(hoja)}</b>.",
+                parse_mode=PARSE_MODE,
+            )
+        except Exception:
+            logging.exception("No se pudo notificar facturación al chat %s", chat_id)
 
 
 def get_sheet(context: ContextTypes.DEFAULT_TYPE):
@@ -362,17 +409,16 @@ async def recibir_nombre_hoja(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         ws_actual = get_sheet(context)
         filas_originales = ws_actual.get('D7:I200')
-
         nueva_ws = ws_actual.duplicate(new_sheet_name=nombre)
 
         sobrevivientes = []
+        pendientes_cuota1 = []
         completadas = 0
-        total_filas_originales = 0
+        ultimas_cuotas = []
 
         for fila in filas_originales:
             if not fila or not fila[0]:
                 continue
-            total_filas_originales += 1
 
             producto = fila[0]
             costo = fila[2] if len(fila) > 2 else ""
@@ -381,18 +427,99 @@ async def recibir_nombre_hoja(update: Update, context: ContextTypes.DEFAULT_TYPE
 
             try:
                 actual, maximo = cuota_str.split('/')
-                nueva_actual = int(actual) + 1
+                actual = int(actual)
                 maximo = int(maximo)
             except (ValueError, AttributeError):
                 sobrevivientes.append((producto, costo, cuota_str, valor_cuota))
                 continue
 
+            # La cuota 1 de un producto recién agregado a veces no se cobra el
+            # mismo mes de la compra: se pregunta antes de avanzarla.
+            if actual == 1:
+                pendientes_cuota1.append((producto, costo, maximo, valor_cuota))
+                continue
+
+            nueva_actual = actual + 1
             if nueva_actual > maximo:
                 completadas += 1
                 continue
-
+            if nueva_actual == maximo:
+                ultimas_cuotas.append(producto)
             sobrevivientes.append((producto, costo, f"{nueva_actual}/{maximo}", valor_cuota))
 
+        context.user_data['nueva_hoja'] = {
+            'nombre': nombre,
+            'ws': nueva_ws,
+            'sobrevivientes': sobrevivientes,
+            'completadas': completadas,
+            'ultimas_cuotas': ultimas_cuotas,
+            'pendientes_cuota1': pendientes_cuota1,
+        }
+
+        if pendientes_cuota1:
+            return await preguntar_cuota1(update, context)
+
+        await finalizar_nueva_hoja(update, context)
+        return ConversationHandler.END
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Error: {html.escape(str(e))}",
+            parse_mode=PARSE_MODE,
+            reply_markup=menu_inline(),
+        )
+        return ConversationHandler.END
+
+
+async def preguntar_cuota1(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    estado = context.user_data['nueva_hoja']
+    producto, costo, maximo, valor_cuota = estado['pendientes_cuota1'].pop()
+    estado['cuota1_actual'] = (producto, costo, maximo, valor_cuota)
+
+    botones = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Sí, ya se cobró", callback_data=CB_CUOTA1_SI)],
+        [InlineKeyboardButton("❌ No, aún no", callback_data=CB_CUOTA1_NO)],
+    ])
+    await responder(
+        update, context,
+        f"🆕 <b>{html.escape(producto)}</b> está en su primera cuota (1/{maximo}).\n\n"
+        f"¿Ya se cobró la cuota 1 este mes?",
+        reply_markup=botones,
+    )
+    return CONFIRMAR_CUOTA1
+
+
+async def recibir_confirmar_cuota1(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    estado = context.user_data['nueva_hoja']
+    producto, costo, maximo, valor_cuota = estado['cuota1_actual']
+
+    if query.data == CB_CUOTA1_SI:
+        nueva_actual = 2
+        if nueva_actual > maximo:
+            estado['completadas'] += 1
+        else:
+            if nueva_actual == maximo:
+                estado['ultimas_cuotas'].append(producto)
+            estado['sobrevivientes'].append((producto, costo, f"{nueva_actual}/{maximo}", valor_cuota))
+    else:
+        estado['sobrevivientes'].append((producto, costo, f"1/{maximo}", valor_cuota))
+
+    if estado['pendientes_cuota1']:
+        return await preguntar_cuota1(update, context)
+
+    await finalizar_nueva_hoja(update, context)
+    return ConversationHandler.END
+
+
+async def finalizar_nueva_hoja(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    estado = context.user_data.pop('nueva_hoja')
+    nombre = estado['nombre']
+    nueva_ws = estado['ws']
+    sobrevivientes = estado['sobrevivientes']
+    completadas = estado['completadas']
+    ultimas_cuotas = estado['ultimas_cuotas']
+
+    try:
         # Limpia toda la tabla de cuotas y de gastos antes de reescribir
         nueva_ws.batch_clear(['D7:I200', 'B3:B1000'])
 
@@ -410,24 +537,22 @@ async def recibir_nombre_hoja(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         context.chat_data['hoja'] = nombre
         context.chat_data.pop('hojas_disponibles', None)
+        context.chat_data.pop('facturacion_notificada', None)
 
-        await update.message.reply_text(
+        texto = (
             f"✅ <b>Hoja creada:</b> {html.escape(nombre)}\n\n"
             f"📅 Cuotas avanzadas: <b>{len(sobrevivientes)}</b>\n"
             f"🏁 Cuotas completadas y eliminadas: <b>{completadas}</b>\n"
             f"📊 Gastos reiniciados con el valor de las cuotas vigentes.\n\n"
-            f"📍 Ahora estás usando esta hoja.",
-            parse_mode=PARSE_MODE,
-            reply_markup=menu_inline(),
+            f"📍 Ahora estás usando esta hoja."
         )
-    except Exception as e:
-        await update.message.reply_text(
-            f"❌ Error: {html.escape(str(e))}",
-            parse_mode=PARSE_MODE,
-            reply_markup=menu_inline(),
-        )
+        if ultimas_cuotas:
+            lista = ", ".join(html.escape(p) for p in ultimas_cuotas)
+            texto += f"\n\n⚠️ <b>Última cuota este mes:</b> {lista}"
 
-    return ConversationHandler.END
+        await responder(update, context, texto, reply_markup=menu_inline())
+    except Exception as e:
+        await responder(update, context, f"❌ Error: {html.escape(str(e))}", reply_markup=menu_inline())
 
 
 async def eliminar_hoja_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -580,6 +705,7 @@ if __name__ == '__main__':
         entry_points=[CallbackQueryHandler(nueva_hoja_start, pattern=f"^{CB_NUEVA_HOJA}$")],
         states={
             NOMBRE_HOJA: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_nombre_hoja)],
+            CONFIRMAR_CUOTA1: [CallbackQueryHandler(recibir_confirmar_cuota1, pattern=f"^{CB_CUOTA1_SI}$|^{CB_CUOTA1_NO}$")],
         },
         fallbacks=[
             CommandHandler("cancelar", cancelar),
@@ -605,6 +731,8 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(cancelar, pattern=f"^{CB_CANCELAR}$"))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_monto))
+
+    app.job_queue.run_daily(revisar_facturacion, time=HORA_REVISION_FACTURACION_UTC)
 
     app.run_webhook(
         listen="0.0.0.0",
