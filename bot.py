@@ -55,6 +55,7 @@ CB_CUOTA1_SI = "cuota1_si"
 CB_CUOTA1_NO = "cuota1_no"
 
 DEFAULT_SHEET = "21 de agosto"
+CONFIG_CELL = "A1"  # Celda donde se almacena JSON con hojas activas por chat
 
 # Hora (UTC) en la que se revisa si hoy corresponde al día de cierre de facturación
 # de la hoja activa de cada chat. Chile está en UTC-4/UTC-3, así que 13:00 UTC
@@ -137,9 +138,36 @@ async def revisar_facturacion(context: ContextTypes.DEFAULT_TYPE):
             logging.exception("No se pudo notificar facturación al chat %s", chat_id)
 
 
-def get_sheet(context: ContextTypes.DEFAULT_TYPE):
+def cargar_hoja_activa(chat_id):
+    try:
+        sh = gc.open_by_key(SHEET_ID)
+        ws = sh.worksheet(DEFAULT_SHEET)
+        valor = ws.acell(CONFIG_CELL).value or "{}"
+        config = json.loads(valor)
+        return config.get(str(chat_id), DEFAULT_SHEET)
+    except Exception:
+        return DEFAULT_SHEET
+
+
+def guardar_hoja_activa(chat_id, nombre_hoja):
+    try:
+        sh = gc.open_by_key(SHEET_ID)
+        ws = sh.worksheet(DEFAULT_SHEET)
+        valor = ws.acell(CONFIG_CELL).value or "{}"
+        config = json.loads(valor)
+        config[str(chat_id)] = nombre_hoja
+        ws.update_acell(CONFIG_CELL, json.dumps(config))
+    except Exception:
+        pass
+
+
+def get_sheet(context: ContextTypes.DEFAULT_TYPE, chat_id=None):
     sh = gc.open_by_key(SHEET_ID)
-    nombre_hoja = context.chat_data.get('hoja', DEFAULT_SHEET)
+    nombre_hoja = context.chat_data.get('hoja')
+    if nombre_hoja is None and chat_id:
+        nombre_hoja = cargar_hoja_activa(chat_id)
+        context.chat_data['hoja'] = nombre_hoja
+    nombre_hoja = nombre_hoja or DEFAULT_SHEET
     try:
         return sh.worksheet(nombre_hoja)
     except gspread.exceptions.WorksheetNotFound:
@@ -162,7 +190,7 @@ async def hoja_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ver_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        ws = get_sheet(context)
+        ws = get_sheet(context, update.effective_chat.id)
         total = ws.acell('J2').value
         await responder(update, context, f"💰 <b>Total de gastos</b>\n{total}")
     except Exception as e:
@@ -171,7 +199,7 @@ async def ver_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ver_gastos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        ws = get_sheet(context)
+        ws = get_sheet(context, update.effective_chat.id)
         columna_b = ws.col_values(2)[2:]  # Desde B3
         montos = [v for v in columna_b if v]
         total = ws.acell('J2').value
@@ -191,7 +219,7 @@ async def ver_gastos(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ver_productos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        ws = get_sheet(context)
+        ws = get_sheet(context, update.effective_chat.id)
         filas = ws.get('D7:I200')
 
         bloques = []
@@ -368,6 +396,7 @@ async def recibir_hoja(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ELEGIR_HOJA
 
     context.chat_data['hoja'] = nombre
+    guardar_hoja_activa(update.effective_chat.id, nombre)
     context.chat_data.pop('hojas_disponibles', None)
     await responder(
         update, context,
@@ -536,6 +565,7 @@ async def finalizar_nueva_hoja(update: Update, context: ContextTypes.DEFAULT_TYP
             nueva_ws.update_cell(fila_gasto, 2, valor_cuota)
 
         context.chat_data['hoja'] = nombre
+        guardar_hoja_activa(update.effective_chat.id, nombre)
         context.chat_data.pop('hojas_disponibles', None)
         context.chat_data.pop('facturacion_notificada', None)
 
@@ -619,7 +649,9 @@ async def confirmar_eliminar_hoja(update: Update, context: ContextTypes.DEFAULT_
 
         if context.chat_data.get('hoja') == nombre:
             restantes = [w.title for w in sh.worksheets()]
-            context.chat_data['hoja'] = DEFAULT_SHEET if DEFAULT_SHEET in restantes else restantes[0]
+            nueva_hoja = DEFAULT_SHEET if DEFAULT_SHEET in restantes else restantes[0]
+            context.chat_data['hoja'] = nueva_hoja
+            guardar_hoja_activa(update.effective_chat.id, nueva_hoja)
 
         context.chat_data.pop('hojas_disponibles', None)
         await responder(
@@ -734,9 +766,4 @@ if __name__ == '__main__':
 
     app.job_queue.run_daily(revisar_facturacion, time=HORA_REVISION_FACTURACION_UTC)
 
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=token,
-        webhook_url=f"{RENDER_URL}/{token}"
-    )
+    app.run_polling()
