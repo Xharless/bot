@@ -699,8 +699,13 @@ async def post_init(application: Application):
     await application.bot.set_my_commands([])
 
 
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.error(f"Error: {context.error}")
+
+
 if __name__ == '__main__':
     app = Application.builder().token(token).post_init(post_init).build()
+    app.add_error_handler(error_handler)
 
     app.add_handler(CallbackQueryHandler(ver_total, pattern=f"^{CB_TOTAL}$"))
     app.add_handler(CallbackQueryHandler(ver_gastos, pattern=f"^{CB_GASTOS}$"))
