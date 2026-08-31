@@ -771,4 +771,9 @@ if __name__ == '__main__':
 
     app.job_queue.run_daily(revisar_facturacion, time=HORA_REVISION_FACTURACION_UTC)
 
-    app.run_polling()
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=token,
+        webhook_url=f"{RENDER_URL}/{token}"
+    )
