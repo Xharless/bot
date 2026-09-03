@@ -704,6 +704,11 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 if __name__ == '__main__':
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse, Response
+    from starlette.routing import Route
+    import uvicorn
+
     app = Application.builder().token(token).post_init(post_init).build()
     app.add_error_handler(error_handler)
 
@@ -771,9 +776,28 @@ if __name__ == '__main__':
 
     app.job_queue.run_daily(revisar_facturacion, time=HORA_REVISION_FACTURACION_UTC)
 
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=token,
-        webhook_url=f"{RENDER_URL}/{token}"
+    async def webhook_handler(request):
+        if request.method == 'GET':
+            return PlainTextResponse("OK")
+        try:
+            data = await request.json()
+            update = Update.de_json(data, app.bot)
+            await app.process_update(update)
+            return Response(status_code=200)
+        except Exception as e:
+            logging.error(f"Error procesando webhook: {e}")
+            return Response(status_code=500)
+
+    async def startup():
+        await app.start()
+
+    async def shutdown():
+        await app.stop()
+
+    starlette_app = Starlette(
+        routes=[Route(f'/{token}', webhook_handler, methods=['GET', 'POST'])],
     )
+    starlette_app.add_event_handler('startup', startup)
+    starlette_app.add_event_handler('shutdown', shutdown)
+
+    uvicorn.run(starlette_app, host="0.0.0.0", port=PORT)
