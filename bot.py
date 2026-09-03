@@ -788,16 +788,16 @@ if __name__ == '__main__':
             logging.error(f"Error procesando webhook: {e}")
             return Response(status_code=500)
 
-    async def startup():
-        await app.start()
-
-    async def shutdown():
-        await app.stop()
-
     starlette_app = Starlette(
         routes=[Route(f'/{token}', webhook_handler, methods=['GET', 'POST'])],
     )
-    starlette_app.add_event_handler('startup', startup)
-    starlette_app.add_event_handler('shutdown', shutdown)
+
+    @starlette_app.on_event("startup")
+    async def startup():
+        await app.start()
+
+    @starlette_app.on_event("shutdown")
+    async def shutdown():
+        await app.stop()
 
     uvicorn.run(starlette_app, host="0.0.0.0", port=PORT)
