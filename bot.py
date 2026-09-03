@@ -706,7 +706,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == '__main__':
     from contextlib import asynccontextmanager
     from starlette.applications import Starlette
-    from starlette.responses import PlainTextResponse, Response
+    from starlette.responses import PlainTextResponse
     from starlette.routing import Route
     import uvicorn
 
@@ -778,16 +778,17 @@ if __name__ == '__main__':
     app.job_queue.run_daily(revisar_facturacion, time=HORA_REVISION_FACTURACION_UTC)
 
     async def webhook_handler(request):
-        if request.method == 'GET':
+        # Todo lo que no sea POST (GET/HEAD) es un chequeo de uptime, no un update.
+        if request.method != 'POST':
             return PlainTextResponse("OK")
         try:
-            data = await request.json()
-            update = Update.de_json(data, app.bot)
-            await app.process_update(update)
-            return Response(status_code=200)
-        except Exception as e:
-            logging.error(f"Error procesando webhook: {e}")
-            return Response(status_code=500)
+            update = Update.de_json(await request.json(), app.bot)
+            if update:
+                await app.process_update(update)
+        except Exception:
+            # Nunca devolver 5xx: Telegram reintenta el update en bucle.
+            logging.exception("Webhook no procesado")
+        return PlainTextResponse("OK")
 
     @asynccontextmanager
     async def lifespan(_):
