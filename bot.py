@@ -704,6 +704,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 if __name__ == '__main__':
+    from contextlib import asynccontextmanager
     from starlette.applications import Starlette
     from starlette.responses import PlainTextResponse, Response
     from starlette.routing import Route
@@ -788,16 +789,18 @@ if __name__ == '__main__':
             logging.error(f"Error procesando webhook: {e}")
             return Response(status_code=500)
 
+    @asynccontextmanager
+    async def lifespan(_):
+        await app.initialize()
+        await app.bot.set_webhook(url=f"{RENDER_URL}/{token}")
+        await app.start()
+        yield
+        await app.stop()
+        await app.shutdown()
+
     starlette_app = Starlette(
         routes=[Route(f'/{token}', webhook_handler, methods=['GET', 'POST'])],
+        lifespan=lifespan,
     )
-
-    @starlette_app.on_event("startup")
-    async def startup():
-        await app.start()
-
-    @starlette_app.on_event("shutdown")
-    async def shutdown():
-        await app.stop()
 
     uvicorn.run(starlette_app, host="0.0.0.0", port=PORT)
