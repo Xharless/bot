@@ -780,7 +780,7 @@ if __name__ == '__main__':
     async def webhook_handler(request):
         # Todo lo que no sea POST (GET/HEAD) es un chequeo de uptime, no un update.
         if request.method != 'POST':
-            return PlainTextResponse("OK")
+            return PlainTextResponse("OK v2")
         try:
             update = Update.de_json(await request.json(), app.bot)
             if update:
