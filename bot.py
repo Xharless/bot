@@ -793,7 +793,7 @@ if __name__ == '__main__':
     @asynccontextmanager
     async def lifespan(_):
         await app.initialize()
-        await app.bot.set_webhook(url=f"{RENDER_URL}/{token}")
+        await app.bot.set_webhook(url=f"{RENDER_URL}/{token}", allowed_updates=Update.ALL_TYPES)
         await app.start()
         yield
         await app.stop()
