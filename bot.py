@@ -800,7 +800,11 @@ if __name__ == '__main__':
         await app.shutdown()
 
     starlette_app = Starlette(
-        routes=[Route(f'/{token}', webhook_handler, methods=['GET', 'POST'])],
+        routes=[
+            Route(f'/{token}', webhook_handler, methods=['GET', 'POST']),
+            # Health check para UptimeRobot: no expone el token en servicios externos.
+            Route('/', lambda _: PlainTextResponse("OK v2")),
+        ],
         lifespan=lifespan,
     )
 
