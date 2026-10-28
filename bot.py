@@ -706,7 +706,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == '__main__':
     from contextlib import asynccontextmanager
     from starlette.applications import Starlette
-    from starlette.responses import PlainTextResponse
+    from starlette.responses import JSONResponse, PlainTextResponse
     from starlette.routing import Route
     import uvicorn
 
@@ -804,6 +804,7 @@ if __name__ == '__main__':
             Route(f'/{token}', webhook_handler, methods=['GET', 'POST']),
             # Health check para UptimeRobot: no expone el token en servicios externos.
             Route('/', lambda _: PlainTextResponse("OK v2")),
+            Route('/healthz', lambda _: JSONResponse({"status": "healthy"})),
         ],
         lifespan=lifespan,
     )
